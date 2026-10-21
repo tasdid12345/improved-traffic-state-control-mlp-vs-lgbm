@@ -1,25 +1,15 @@
-# Congestion-State Classification: LightGBM vs MLP on Metro Interstate Traffic Volume
+# Baseline MLP vs. class-balanced LightGBM on UCI Metro Interstate Traffic Volume
 
-Motivation: "Fully-autonomous, vision-based traffic signal control: From simulation to reality" (2022) proposes a deep reinforcement learning controller that acts on live RGB camera footage of an intersection, so the quality of the learned state-input model matters for real-world traffic control. This experiment asks a simpler, tabular version of that question: can an interpretable, class-balanced gradient-boosted model classify high-congestion states better than a standard neural network baseline?
+Question: can a class-balanced, CV-tuned LightGBM with an interpretable feature set beat a standard MLP at classifying high-congestion states (traffic volume above the training median) on the UCI Metro Interstate Traffic Volume data?
 
-Question: Can a class-balanced, CV-tuned LightGBM model with an interpretable feature set beat a standard MLP at classifying high-congestion intersection states from traffic-context features?
+Method:
+- Data fetched with `ucimlrepo` (dataset id 492), capped at 200k rows, sorted by time.
+- Chronological 80/20 split; the threshold is the median of the training portion only.
+- Baseline: scikit-learn `MLPClassifier` (64-32, early stopping) on the base features.
+- Improved: class-balanced LightGBM on the base features plus engineered time-of-week, cyclical hour, rush-hour, night, clear-sky and precipitation features. Hyper-parameters are chosen by 3-fold `TimeSeriesSplit` CV on the training portion only.
+- The test set is used once for the final evaluation, over seeds 42, 43 and 44.
 
-Dataset: UCI Metro Interstate Traffic Volume (hourly traffic counts with weather and holiday fields), fetched with the `ucimlrepo` package. The target is a binary high-congestion label (volume above the training median). This is not the paper's own dataset; it is a tabular stand-in for the paper's camera-based signal state.
-
-Baseline vs improved:
-- Baseline: standard scikit-learn MLPClassifier on standardised and one-hot encoded features.
-- Improved: class-balanced LightGBM with hyper-parameters chosen by time-series cross-validation on the training portion, using identical features and preprocessing.
-
-Evaluation: chronological 80/20 split (no future leakage), main metric macro-F1 on the held-out test set, with accuracy and log-loss as secondary metrics.
-
-## How to run
-
-```
-pip install -r requirements.txt
-python analysis.py
-```
-
-Results: written to `results.json` (and `figures/macro_f1_comparison.png`).
+Run: `python analysis.py` (writes `results.json` and `figures/macro_f1_comparison.png`).
 
 ## Reference
 

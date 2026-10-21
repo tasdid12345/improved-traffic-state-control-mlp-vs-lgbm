@@ -1,4 +1,4 @@
-"""Baseline MLP vs class-balanced, CV-tuned LightGBM on UCI Metro Interstate Traffic Volume.
+"""Baseline MLP vs class-balanced, CV-tuned LightGBM with extra engineered features on UCI Metro Interstate Traffic Volume.
 Target: high-congestion label (traffic_volume > training-set median). Chronological 80/20 split."""
 import json, os, socket, sys, time
 import matplotlib
@@ -18,6 +18,9 @@ from ucimlrepo import fetch_ucirepo
 SEED, SEEDS, MAX_ROWS, DATASET_ID = 42, [42, 43, 44], 200_000, 492
 SOURCE_URL = "https://archive.ics.uci.edu/dataset/492/metro+interstate+traffic+volume"
 NUM = ["hour", "dayofweek", "month", "is_weekend", "temp", "clouds_all", "rain_1h", "snow_1h"]
+# Extra engineered numeric features, used ONLY by the improved LightGBM model.
+EXTRA_NUM = ["hour_of_week", "hour_sin", "hour_cos", "is_rush", "is_night", "clear_sky", "is_precip"]
+NUM_IMP = NUM + EXTRA_NUM
 CAT = ["holiday", "weather_main"]
 socket.setdefaulttimeout(60)  # 60 s timeout for the underlying HTTP calls
 
@@ -39,7 +42,7 @@ def load_data():
 
 
 def build_features(df):
-    """Shared feature set for both models (interpretable, no raw timestamp, no leakage of volume)."""
+    """Shared base feature set (interpretable, no raw timestamp, no leakage of volume). Used by the baseline."""
     dt = pd.to_datetime(df["date_time"])
     return pd.DataFrame({
         "hour": dt.dt.hour, "dayofweek": dt.dt.dayofweek, "month": dt.dt.month,
@@ -51,23 +54,38 @@ def build_features(df):
     })
 
 
-def make_pre():
+def build_improved_features(feats):
+    """Base features plus engineered time-of-week / rush-hour / weather interaction features.
+    Computed from the base feature frame only (no target information)."""
+    out = feats.copy()
+    out["hour_of_week"] = feats["dayofweek"] * 24 + feats["hour"]
+    out["hour_sin"] = np.sin(2 * np.pi * feats["hour"] / 24.0)
+    out["hour_cos"] = np.cos(2 * np.pi * feats["hour"] / 24.0)
+    out["is_rush"] = (feats["hour"].between(6, 9) | feats["hour"].between(15, 18)).astype(int) \
+        * (1 - feats["is_weekend"])
+    out["is_night"] = feats["hour"].isin(range(0, 6)).astype(int)
+    out["clear_sky"] = (feats["clouds_all"] < 20).astype(int)
+    out["is_precip"] = ((feats["rain_1h"] > 0) | (feats["snow_1h"] > 0)).astype(int)
+    return out
+
+
+def make_pre(num=NUM):
     """Shared preprocessing: standardise numeric, one-hot categorical (fitted on training folds only)."""
-    return ColumnTransformer([("num", StandardScaler(), NUM),
+    return ColumnTransformer([("num", StandardScaler(), num),
                               ("cat", OneHotEncoder(handle_unknown="ignore"), CAT)])
 
 
 def make_mlp(seed):
-    """BASELINE: standard scikit-learn MLP with a fixed, untuned architecture."""
-    return make_pipeline(make_pre(), MLPClassifier(hidden_layer_sizes=(64, 32), max_iter=300,
-                                                   early_stopping=True, random_state=seed))
+    """BASELINE: standard scikit-learn MLP with a fixed, untuned architecture. Unchanged."""
+    return make_pipeline(make_pre(NUM), MLPClassifier(hidden_layer_sizes=(64, 32), max_iter=300,
+                                                      early_stopping=True, random_state=seed))
 
 
 def make_lgbm(params, seed):
-    """IMPROVED: class-balanced LightGBM with CV-selected hyper-parameters."""
-    return make_pipeline(make_pre(), LGBMClassifier(
+    """IMPROVED: class-balanced LightGBM with engineered features and CV-selected hyper-parameters."""
+    return make_pipeline(make_pre(NUM_IMP), LGBMClassifier(
         class_weight="balanced", subsample=0.8, subsample_freq=1, colsample_bytree=0.8,
-        random_state=seed, verbose=-1, **params))
+        random_state=seed, verbose=-1, n_jobs=2, **params))
 
 
 def main():
@@ -86,19 +104,20 @@ def main():
     thr = df["vol"].iloc[:cut].median()  # threshold from training portion only
     y = (df["vol"] > thr).astype(int).to_numpy()
     Ftr, Fte, ytr, yte = feats.iloc[:cut], feats.iloc[cut:], y[:cut], y[cut:]
+    Itr, Ite = build_improved_features(Ftr), build_improved_features(Fte)
     print(f"rows={len(df)} train={len(Ftr)} test={len(Fte)} threshold={thr} "
           f"test positive rate={yte.mean():.3f}")
 
     # LightGBM hyper-parameter search: time-series CV on the training portion only
-    grid = list(ParameterGrid({"n_estimators": [200, 500], "learning_rate": [0.05],
-                               "num_leaves": [15, 31, 63], "min_child_samples": [20, 100]}))
+    grid = list(ParameterGrid({"n_estimators": [200, 400, 800], "learning_rate": [0.05],
+                               "num_leaves": [7, 15, 31], "min_child_samples": [100, 300]}))
     tscv = TimeSeriesSplit(n_splits=3)
     best_cv, best_params = -1.0, None
     for params in grid:
         fold_f1 = []
-        for fit_idx, val_idx in tscv.split(Ftr):
-            m = make_lgbm(params, SEED).fit(Ftr.iloc[fit_idx], ytr[fit_idx])
-            fold_f1.append(f1_score(ytr[val_idx], m.predict(Ftr.iloc[val_idx]), average="macro"))
+        for fit_idx, val_idx in tscv.split(Itr):
+            m = make_lgbm(params, SEED).fit(Itr.iloc[fit_idx], ytr[fit_idx])
+            fold_f1.append(f1_score(ytr[val_idx], m.predict(Itr.iloc[val_idx]), average="macro"))
         cv = float(np.mean(fold_f1))
         print(f"  LGBM CV {params}: macro-F1={cv:.4f}")
         if cv > best_cv:
@@ -106,14 +125,14 @@ def main():
     print(f"best LightGBM params {best_params} (CV macro-F1={best_cv:.4f}) [{time.time()-t0:.0f}s]")
 
     # Test set used once: fit each model on full training portion, evaluate per seed
-    def run(make, seed):
-        m = make(seed).fit(Ftr, ytr)
-        pred, proba = m.predict(Fte), m.predict_proba(Fte)[:, 1]
+    def run(make, seed, Fa, Fb):
+        m = make(seed).fit(Fa, ytr)
+        pred, proba = m.predict(Fb), m.predict_proba(Fb)[:, 1]
         return {"macro_f1": f1_score(yte, pred, average="macro"),
                 "accuracy": accuracy_score(yte, pred), "logloss": log_loss(yte, proba)}
 
-    base = [run(make_mlp, s) for s in SEEDS]
-    imp = [run(lambda s: make_lgbm(best_params, s), s) for s in SEEDS]
+    base = [run(make_mlp, s, Ftr, Fte) for s in SEEDS]
+    imp = [run(lambda s: make_lgbm(best_params, s), s, Itr, Ite) for s in SEEDS]
     for name, runs in [("baseline MLP", base), ("improved LGBM", imp)]:
         print(f"{name}: " + ", ".join(f"{k}={np.mean([r[k] for r in runs]):.4f}"
                                       for k in ["macro_f1", "accuracy", "logloss"]))
@@ -140,7 +159,7 @@ def main():
 
     results = {
         "question": "Can a class-balanced, CV-tuned LightGBM model with an interpretable feature set beat a standard MLP at classifying high-congestion intersection states from traffic-context features on the public UCI Metro Interstate Traffic Volume data?",
-        "method": "Chronological 80/20 split; target = traffic_volume above training median; MLP baseline vs class-balanced LightGBM tuned by TimeSeriesSplit CV on training data; test set used once; seeds 42-44.",
+        "method": "Chronological 80/20 split; target = traffic_volume above training median; MLP baseline vs class-balanced LightGBM with engineered time-of-week/rush-hour/weather features, tuned by TimeSeriesSplit CV on training data; test set used once; seeds 42-44.",
         "dataset": {
             "name": "UCI Metro Interstate Traffic Volume (id=492)",
             "source_url": SOURCE_URL,
@@ -151,7 +170,7 @@ def main():
         "metric_name": "macro-F1 (test set)",
         "higher_is_better": True,
         "baseline": "Standard scikit-learn MLPClassifier (64-32 hidden units, early stopping) on standardised numeric and one-hot categorical features.",
-        "improved": "Class-balanced LightGBM (class_weight='balanced', subsampling) with hyper-parameters chosen by 3-fold time-series CV on the training portion; identical features and preprocessing.",
+        "improved": "Class-balanced LightGBM (class_weight='balanced', subsampling) on base plus engineered features (hour-of-week, cyclical hour, rush-hour, night, clear-sky, precipitation flags), with hyper-parameters chosen by 3-fold time-series CV on the training portion.",
         "metrics": {
             "baseline_score": b_f1,
             "improved_score": i_f1,
@@ -166,6 +185,8 @@ def main():
             "n_seeds": len(SEEDS),
         },
         "notes": (f"Selected LightGBM params {best_params} by time-series CV on training data only. "
+                  "Improved model uses extra engineered features that the baseline does not receive; "
+                  "baseline features and MLP are unchanged. "
                   "Label is a tabular stand-in for the paper's camera-based signal state, not its RGB footage. "
                   "Chronological split means the test period is later than training (distribution shift). "
                   "MLP is untuned by design (fixed architecture), so tuning budget is not equal. "
