@@ -1,0 +1,31 @@
+{
+  "question": "Can a class-balanced, CV-tuned LightGBM model with an interpretable feature set beat a standard MLP at classifying high-congestion intersection states from traffic-context features on the public UCI Metro Interstate Traffic Volume data?",
+  "method": "Chronological 80/20 split; target = traffic_volume above training median; MLP baseline vs class-balanced LightGBM with engineered time-of-week/rush-hour/weather features, tuned by TimeSeriesSplit CV on training data; test set used once; seeds 42-44.",
+  "dataset": {
+    "name": "UCI Metro Interstate Traffic Volume (id=492)",
+    "source_url": "https://archive.ics.uci.edu/dataset/492/metro+interstate+traffic+volume",
+    "n_rows": 48204,
+    "n_train": 38563,
+    "n_test": 9641,
+    "same_as_paper": false,
+    "baseline_is_papers_method": false
+  },
+  "metric_name": "macro-F1 (test set)",
+  "higher_is_better": true,
+  "baseline": "Standard scikit-learn MLPClassifier (64-32 hidden units, early stopping) on standardised numeric and one-hot categorical features.",
+  "improved": "Class-balanced LightGBM (class_weight='balanced', subsampling) on base plus engineered features (hour-of-week, cyclical hour, rush-hour, night, clear-sky, precipitation flags), with hyper-parameters chosen by 3-fold time-series CV on the training portion.",
+  "metrics": {
+    "baseline_score": 0.9502413017874614,
+    "improved_score": 0.9508283683333576,
+    "improvement": 0.0005870665458962421,
+    "baseline_score_std": 0.0013272559726605828,
+    "improved_score_std": 8.430879882940647e-05,
+    "baseline_accuracy": 0.9502472081042769,
+    "improved_accuracy": 0.9508349756249351,
+    "baseline_logloss": 0.16626940100845636,
+    "improved_logloss": 0.14783865881085437,
+    "lgbm_best_cv_macro_f1": 0.9563188210714637,
+    "n_seeds": 3
+  },
+  "notes": "Selected LightGBM params {'learning_rate': 0.05, 'min_child_samples': 300, 'n_estimators': 200, 'num_leaves': 7} by time-series CV on training data only. Improved model uses extra engineered features that the baseline does not receive; baseline features and MLP are unchanged. Label is a tabular stand-in for the paper's camera-based signal state, not its RGB footage. Chronological split means the test period is later than training (distribution shift). MLP is untuned by design (fixed architecture), so tuning budget is not equal. Seeds vary model randomness only, not the split. Class-balanced LightGBM probabilities are not calibrated to the natural class prior, which can affect log-loss. Total runtime 54s."
+}
