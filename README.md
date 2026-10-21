@@ -11,6 +11,28 @@ Method:
 
 Run: `python analysis.py` (writes `results.json` and `figures/macro_f1_comparison.png`).
 
+## Results (latest run)
+
+On the UCI Metro Interstate Traffic Volume dataset, a standard MLP classifier reached 0.950 macro-F1 on the held-out test set, while my class-balanced, CV-tuned LightGBM reached 0.951, a negligible gain within seed variation (std 0.001).
+
+| Metric | Value |
+|---|---|
+| baseline_score | 0.9502 |
+| improved_score | 0.9508 |
+| improvement | 0.0005871 |
+| baseline_score_std | 0.001327 |
+| improved_score_std | 0.00008431 |
+| baseline_accuracy | 0.9502 |
+| improved_accuracy | 0.9508 |
+| baseline_logloss | 0.1663 |
+| improved_logloss | 0.1478 |
+| lgbm_best_cv_macro_f1 | 0.9563 |
+| n_seeds | 3 |
+
+Run on 2026-10-21. Full output: [results.json](results.json) · [run.log](run.log)
+
+Notes: Selected LightGBM params {'learning_rate': 0.05, 'min_child_samples': 300, 'n_estimators': 200, 'num_leaves': 7} by time-series CV on training data only. Improved model uses extra engineered features that the baseline does not receive; baseline features and MLP are unchanged. Label is a tabular stand-in for the paper's camera-based signal state, not its RGB footage. Chronological split means the test period is later than training (distribution shift). MLP is untuned by design (fixed architecture), so tuning budget is not equal. Seeds vary model randomness only, not the split. Class-balanced LightGBM probabilities are not calibrated to the natural class prior, which can affect log-loss. Total runtime 54s.
+
 ## Reference
 
 This project is motivated by the following paper:
